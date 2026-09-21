@@ -54,6 +54,14 @@ class ModelStore:
             )
             self._conn.commit()
 
+    def exists(self, name: str) -> bool:
+        """该名字是否已登记（训练落库前的快速撞名检查）。"""
+        with self._lock:
+            row = self._conn.execute(
+                "SELECT 1 FROM models WHERE name = ?", (name,)
+            ).fetchone()
+        return row is not None
+
     def get(self, name: str) -> dict:
         """按名取档；未登记抛 ``ModelNotFoundError``。"""
         with self._lock:

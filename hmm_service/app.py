@@ -1,4 +1,4 @@
-"""Flask HTTP 层：模型档登记、列出、按名解码。仅经 HTTP 对外。"""
+"""Flask HTTP 层：模型档登记、列出、按名解码、训练落库。仅经 HTTP 对外。"""
 from __future__ import annotations
 
 import os
@@ -8,8 +8,9 @@ from werkzeug.exceptions import HTTPException
 
 from .decode import decode
 from .demo import demo_model_spec
-from .errors import ApiError, InvalidJsonError
+from .errors import ApiError, InvalidJsonError, ModelExistsError
 from .store import ModelStore
+from .training import train_em, validate_training_request
 from .validation import validate_model_spec, validate_observations
 
 DEFAULT_DB_PATH = "hmm_models.db"
@@ -55,6 +56,7 @@ def create_app(db_path: str | None = None, with_demo: bool = True) -> Flask:
                     "list": "GET /models",
                     "get": "GET /models/<name>",
                     "decode": "POST /models/<name>/decode",
+                    "train": "POST /models/train",
                 },
             }
         )
@@ -76,6 +78,45 @@ def create_app(db_path: str | None = None, with_demo: bool = True) -> Flask:
     @app.get("/models/<name>")
     def get_model(name: str):
         return jsonify(store.get(name))
+
+    @app.post("/models/train")
+    def train_model():
+        spec, sequences, max_iterations, tolerance = validate_training_request(
+            _json_body()
+        )
+        if store.exists(spec["name"]):
+            # 快速挡撞名；并发下的最终防线仍是下面 create 的原子插入。
+            raise ModelExistsError(f"模型档 {spec['name']!r} 已存在")
+        result = train_em(spec, sequences, max_iterations, tolerance)
+        # 训练产物再过一遍与登记相同的校验：不能落库一份自己过不了登记的档。
+        trained = validate_model_spec(
+            {
+                "name": spec["name"],
+                "states": spec["states"],
+                "alphabet": spec["alphabet"],
+                "initial": result.parameters.initial,
+                "transition": result.parameters.transition,
+                "emission": result.parameters.emission,
+            }
+        )
+        store.create(trained)  # 撞名按登记语义抛 model_exists，不覆盖别人的档
+        return (
+            jsonify(
+                {
+                    "model": trained,
+                    "iterations": result.iterations,
+                    "converged": result.converged,
+                    "stop_reason": result.stop_reason,
+                    "log_likelihood": result.log_likelihood,
+                    "initial_log_likelihood": result.log_likelihoods[0],
+                    "log_likelihoods": result.log_likelihoods,
+                    "sequences": len(sequences),
+                    "max_iterations": max_iterations,
+                    "tolerance": tolerance,
+                }
+            ),
+            201,
+        )
 
     @app.post("/models/<name>/decode")
     def decode_model(name: str):
