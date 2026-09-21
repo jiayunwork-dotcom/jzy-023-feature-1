@@ -10,6 +10,8 @@ from .decode import decode
 from .demo import demo_model_spec
 from .errors import ApiError, InvalidJsonError
 from .store import ModelStore
+from .training.engine import train
+from .training.validation import validate_training_request
 from .validation import validate_model_spec, validate_observations
 
 DEFAULT_DB_PATH = "hmm_models.db"
@@ -55,6 +57,7 @@ def create_app(db_path: str | None = None, with_demo: bool = True) -> Flask:
                     "list": "GET /models",
                     "get": "GET /models/<name>",
                     "decode": "POST /models/<name>/decode",
+                    "train": "POST /training",
                 },
             }
         )
@@ -95,5 +98,47 @@ def create_app(db_path: str | None = None, with_demo: bool = True) -> Flask:
                 "tie_break": result.tie_break,
             }
         )
+
+    @app.post("/training")
+    def train_model():
+        body = _json_body()
+        # 开训前挡掉一切不合法：状态数、维数、归一、未知符号、空批次、
+        # 迭代上限、容差。不合法不会进入任何一次迭代。
+        seed, sequences, max_iterations, tolerance = validate_training_request(body)
+
+        index_of = {sym: i for i, sym in enumerate(seed["alphabet"])}
+        sequences_idx = [[index_of[s] for s in seq] for seq in sequences]
+
+        result = train(
+            seed,
+            sequences_idx,
+            max_iterations=max_iterations,
+            tolerance=tolerance,
+        )
+        # 估出的参数按正式模型档过同一套登记校验，再用调用方给的名字落库；
+        # 撞名沿用登记语义抛 model_exists，绝不悄悄覆盖。
+        spec = validate_model_spec(
+            result.to_spec(seed["name"], seed["states"], seed["alphabet"])
+        )
+        store.create(spec)
+
+        return jsonify(
+            {
+                "model": spec["name"],
+                "iterations": result.iterations,
+                "stop_reason": result.stop_reason,
+                "converged": result.converged,
+                "max_iterations": result.max_iterations,
+                "tolerance": result.tolerance,
+                "n_sequences": result.n_sequences,
+                "log_likelihoods": result.log_likelihoods,
+                "final_log_likelihood": result.final_log_likelihood,
+                "states": spec["states"],
+                "alphabet": spec["alphabet"],
+                "initial": spec["initial"],
+                "transition": spec["transition"],
+                "emission": spec["emission"],
+            }
+        ), 201
 
     return app

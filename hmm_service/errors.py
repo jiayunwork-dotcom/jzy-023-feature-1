@@ -47,6 +47,13 @@ class EmptyObservationsError(ApiError):
     error_type = "empty_observations"
 
 
+class EmptyTrainingSetError(ApiError):
+    """训练观测批次为空（一条观测串都没有，或批次里夹了空串）。"""
+
+    status_code = 400
+    error_type = "empty_training_set"
+
+
 class UnknownSymbolError(ApiError):
     """观测符号不在该档字母表内。"""
 
